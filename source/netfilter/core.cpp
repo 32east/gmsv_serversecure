@@ -763,7 +763,6 @@ private:
 					Warning("%s\n", server_lua->GetString());
 					server_lua->Pop();
 				}
-			server_lua->Pop();
 		server_lua->Pop();
 	server_lua->Pop();
 
