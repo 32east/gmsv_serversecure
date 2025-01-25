@@ -898,6 +898,11 @@ private:
     }
 
     const auto type = static_cast<uint8_t>(packet.ReadByte());
+
+    DevWarning("[ServerSecure] Received! len: %d, channel: 0x%X, type: %c "
+               "from %s\n",
+               len, channel, type, IPToString(from.sin_addr));
+
     if (packet_validation_enabled) {
       switch (type) {
       case 'W': // server challenge request
@@ -1148,7 +1153,7 @@ private:
   ssize_t HandleDetour(SOCKET s, void *buf, recvlen_t buflen, int32_t flags,
                        sockaddr *from, socklen_t *fromlen) {
     if (s != game_socket) {
-      DevMsg(3,
+      DevMsg(4,
              "[ServerSecure] recvfrom detour called with socket %d, passing "
              "through\n",
              s);
@@ -1158,7 +1163,7 @@ private:
                  : -1;
     }
 
-    DevMsg(3,
+    DevMsg(4,
            "[ServerSecure] recvfrom detour called with socket %d, detouring\n",
            s);
 
