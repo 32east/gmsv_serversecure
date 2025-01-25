@@ -743,8 +743,6 @@ private:
   }
 
   reply_player_t CallPlayerHook(const sockaddr_in &from) {
-    char hook[] = "A2S_PLAYER";
-
     reply_player_t players;
     players.dontsend = false;
     players.senddefault = true;
@@ -755,7 +753,7 @@ private:
 	server_lua->PushSpecial(GarrysMod::Lua::SPECIAL_GLOB);
 		server_lua->GetField(-1, "hook");          
 			server_lua->GetField(-1, "Run");           
-				server_lua->PushString(hook);
+				server_lua->PushString("A2S_PLAYER");
 				server_lua->PushString(IPToString(from.sin_addr));
 				server_lua->PushNumber(from.sin_port);
 
