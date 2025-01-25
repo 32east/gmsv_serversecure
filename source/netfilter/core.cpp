@@ -95,6 +95,21 @@ struct netsocket_t {
   int32_t hTCP;
 };
 
+struct player_t {
+  byte index;
+  std::string name;
+  double score;
+  double time;
+};
+
+struct reply_player_t {
+  bool dontsend;
+  bool senddefault;
+
+  byte count;
+  std::vector<player_t> players;
+};
+
 GarrysMod::Lua::ILuaBase *server_lua = nullptr;
 
 namespace netfilter {
@@ -601,21 +616,6 @@ private:
     int32_t max_clients = 0;
     int32_t udp_port = 0;
     server_tags_t tags;
-  };
-
-  struct player_t {
-    byte index;
-    std::string name;
-    double score;
-    double time;
-  };
-
-  struct reply_player_t {
-    bool dontsend;
-    bool senddefault;
-  
-    byte count;
-    std::vector<player_t> players;
   };
 
   enum class PacketType { Invalid = -1, Good, Info };
