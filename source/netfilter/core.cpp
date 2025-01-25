@@ -754,8 +754,10 @@ private:
 
     int32_t funcs = LuaHelpers::PushHookRun(server_lua, hook);
 
-    if (funcs == 0)
-      return players;
+    if (funcs == 0) {
+        server_lua->Pop(1);
+        return players;
+    }
 
     server_lua->PushString(IPToString(from.sin_addr));
     server_lua->PushNumber(from.sin_port);
