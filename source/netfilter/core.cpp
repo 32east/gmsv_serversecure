@@ -598,7 +598,21 @@ private:
     return PacketType::Invalid; // we've handled it
   }
 
-  PacketType HandleInfoQuery(const sockaddr_in &from) {
+  PacketType SendInfoChallenge(const sockaddr_in &from) {
+    uint8_t challenge_pkt[4 + 1 + 4] {0};
+    *reinterpret_cast<uint32_t*>(challenge_pkt) = 0xFFFFFFFF;
+    *reinterpret_cast<uint8_t*>(challenge_pkt + 4) = 'A';
+    netadr_t net_addr(from.sin_addr.s_addr, from.sin_port);
+    *reinterpret_cast<uint32_t*>(challenge_pkt + 4 + 1) = CBaseServerProxy::Singleton->GetChallengeNr(net_addr);
+    sendto(game_socket, reinterpret_cast<char *>(&challenge_pkt),
+           sizeof(challenge_pkt), 0,
+           reinterpret_cast<const sockaddr *>(&from), sizeof(from));
+    return PacketType::Invalid;
+  }
+
+  PacketType HandleInfoQuery(const uint8_t* buffer,
+                             ssize_t length,
+                             const sockaddr_in &from) {
     const auto time = static_cast<uint32_t>(Plat_FloatTime());
     if (!client_manager.CheckIPRate(from.sin_addr.s_addr, time)) {
       DevWarning(2, "[ServerSecure] Client %s hit rate limit\n",
@@ -607,6 +621,16 @@ private:
     }
 
     if (info_cache_enabled) {
+      if (length == 25) {
+        return SendInfoChallenge(from);
+      }
+      constexpr ssize_t CHALLENGE_OFFSET = 4 + 1 + 20;
+      uint32_t challenge = *reinterpret_cast<const uint32_t*>(buffer + CHALLENGE_OFFSET);
+      netadr_t net_addr(from.sin_addr.s_addr, from.sin_port);
+      if (!CBaseServerProxy::Singleton->CheckChallengeNr(net_addr, challenge)) {
+        return SendInfoChallenge(from);
+      }
+
       return SendInfoCache(from, time);
     }
 
@@ -660,7 +684,7 @@ private:
         return PacketType::Good;
 
       case 'T': // server info request (A2S_INFO)
-        if ((len != 25 && len != 1200) ||
+        if ((len != 25 && len != 29 && len != 1200) ||
             strncmp(reinterpret_cast<const char *>(data + 5),
                     "Source Engine Query", 19) != 0) {
           DevWarning("[ServerSecure] Bad OOB! len: %d, channel: 0x%X, type: %c "
@@ -871,7 +895,7 @@ private:
 
     PacketType type = ClassifyPacket(buffer, len, infrom);
     if (type == PacketType::Info) {
-      type = HandleInfoQuery(infrom);
+      type = HandleInfoQuery(buffer, len, infrom);
     }
 
     return type != PacketType::Invalid ? len : -1;
