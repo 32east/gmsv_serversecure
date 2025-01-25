@@ -93,6 +93,126 @@ struct netsocket_t {
 };
 
 namespace netfilter {
+
+class CBaseServerProxy
+    : public Detouring::ClassProxy<CBaseServer, CBaseServerProxy> {
+private:
+  using TargetClass = CBaseServer;
+  using SubstituteClass = CBaseServerProxy;
+
+public:
+  explicit CBaseServerProxy(CBaseServer *baseserver) {
+    Initialize(baseserver);
+    Hook(&CBaseServer::CheckChallengeNr, &CBaseServerProxy::CheckChallengeNr);
+    Hook(&CBaseServer::GetChallengeNr, &CBaseServerProxy::GetChallengeNr);
+  }
+
+  ~CBaseServerProxy() override {
+    UnHook(&CBaseServer::CheckChallengeNr);
+    UnHook(&CBaseServer::GetChallengeNr);
+  }
+
+  CBaseServerProxy(const CBaseServerProxy &) = delete;
+  CBaseServerProxy(CBaseServerProxy &&) = delete;
+
+  CBaseServerProxy &operator=(const CBaseServerProxy &) = delete;
+  CBaseServerProxy &operator=(CBaseServerProxy &&) = delete;
+
+  virtual bool CheckChallengeNr(const netadr_t &adr,
+                                const int nChallengeValue) {
+    // See if the challenge is valid
+    // Don't care if it is a local address.
+    if (adr.IsLoopback()) {
+      return true;
+    }
+
+    // X360TBD: network
+    if (IsX360()) {
+      return true;
+    }
+
+    UpdateChallengeIfNeeded();
+
+    m_challenge[4] = adr.GetIPNetworkByteOrder();
+
+    CSHA1 hasher;
+    hasher.Update(reinterpret_cast<uint8_t *>(&m_challenge[0]),
+                  sizeof(uint32_t) * m_challenge.size());
+    hasher.Final();
+    SHADigest_t hash = {0};
+    hasher.GetHash(hash);
+    if (reinterpret_cast<int *>(hash)[0] == nChallengeValue) {
+      return true;
+    }
+
+    // try with the old random nonce
+    m_previous_challenge[4] = adr.GetIPNetworkByteOrder();
+
+    hasher.Reset();
+    hasher.Update(reinterpret_cast<uint8_t *>(&m_previous_challenge[0]),
+                  sizeof(uint32_t) * m_previous_challenge.size());
+    hasher.Final();
+    hasher.GetHash(hash);
+    return reinterpret_cast<int *>(hash)[0] == nChallengeValue;
+  }
+
+  virtual int GetChallengeNr(netadr_t &adr) {
+    UpdateChallengeIfNeeded();
+
+    m_challenge[4] = adr.GetIPNetworkByteOrder();
+
+    CSHA1 hasher;
+    hasher.Update(reinterpret_cast<uint8_t *>(&m_challenge[0]),
+                  sizeof(uint32_t) * m_challenge.size());
+    hasher.Final();
+    SHADigest_t hash = {0};
+    hasher.GetHash(hash);
+    return reinterpret_cast<int *>(hash)[0];
+  }
+
+  static void UpdateChallengeIfNeeded() {
+    const double current_time = Plat_FloatTime();
+    if (m_challenge_gen_time >= 0 &&
+        current_time < m_challenge_gen_time + CHALLENGE_NONCE_LIFETIME) {
+      return;
+    }
+
+    m_challenge_gen_time = current_time;
+    m_previous_challenge.swap(m_challenge);
+
+    m_challenge[0] = m_rng();
+    m_challenge[1] = m_rng();
+    m_challenge[2] = m_rng();
+    m_challenge[3] = m_rng();
+  }
+
+  static std::mt19937 InitializeRNG() noexcept {
+    try {
+      return std::mt19937(std::random_device{}());
+    } catch (const std::exception &e) {
+      Warning("[ServerSecure] Failed to initialize RNG seed, falling back to "
+              "less secure current time seed: %s\n",
+              e.what());
+      return std::mt19937(
+          static_cast<uint32_t>(Plat_FloatTime() * 1000000 /* microseconds */));
+    }
+  }
+
+  static std::mt19937 m_rng;
+  static double m_challenge_gen_time;
+  static std::array<uint32_t, 5> m_previous_challenge;
+  static std::array<uint32_t, 5> m_challenge;
+
+  static std::unique_ptr<CBaseServerProxy> Singleton;
+};
+
+std::mt19937 CBaseServerProxy::m_rng = CBaseServerProxy::InitializeRNG();
+double CBaseServerProxy::m_challenge_gen_time = -1;
+std::array<uint32_t, 5> CBaseServerProxy::m_previous_challenge;
+std::array<uint32_t, 5> CBaseServerProxy::m_challenge;
+
+std::unique_ptr<CBaseServerProxy> CBaseServerProxy::Singleton;
+
 static bool CheckChallengeNr(const netadr_t &adr, const int nChallengeValue);
 
 class Core {
@@ -1140,125 +1260,6 @@ LUA_FUNCTION_STATIC(GetSamplePacket) {
                   static_cast<unsigned int>(p.buffer.size()));
   return 3;
 }
-
-class CBaseServerProxy
-    : public Detouring::ClassProxy<CBaseServer, CBaseServerProxy> {
-private:
-  using TargetClass = CBaseServer;
-  using SubstituteClass = CBaseServerProxy;
-
-public:
-  explicit CBaseServerProxy(CBaseServer *baseserver) {
-    Initialize(baseserver);
-    Hook(&CBaseServer::CheckChallengeNr, &CBaseServerProxy::CheckChallengeNr);
-    Hook(&CBaseServer::GetChallengeNr, &CBaseServerProxy::GetChallengeNr);
-  }
-
-  ~CBaseServerProxy() override {
-    UnHook(&CBaseServer::CheckChallengeNr);
-    UnHook(&CBaseServer::GetChallengeNr);
-  }
-
-  CBaseServerProxy(const CBaseServerProxy &) = delete;
-  CBaseServerProxy(CBaseServerProxy &&) = delete;
-
-  CBaseServerProxy &operator=(const CBaseServerProxy &) = delete;
-  CBaseServerProxy &operator=(CBaseServerProxy &&) = delete;
-
-  virtual bool CheckChallengeNr(const netadr_t &adr,
-                                const int nChallengeValue) {
-    // See if the challenge is valid
-    // Don't care if it is a local address.
-    if (adr.IsLoopback()) {
-      return true;
-    }
-
-    // X360TBD: network
-    if (IsX360()) {
-      return true;
-    }
-
-    UpdateChallengeIfNeeded();
-
-    m_challenge[4] = adr.GetIPNetworkByteOrder();
-
-    CSHA1 hasher;
-    hasher.Update(reinterpret_cast<uint8_t *>(&m_challenge[0]),
-                  sizeof(uint32_t) * m_challenge.size());
-    hasher.Final();
-    SHADigest_t hash = {0};
-    hasher.GetHash(hash);
-    if (reinterpret_cast<int *>(hash)[0] == nChallengeValue) {
-      return true;
-    }
-
-    // try with the old random nonce
-    m_previous_challenge[4] = adr.GetIPNetworkByteOrder();
-
-    hasher.Reset();
-    hasher.Update(reinterpret_cast<uint8_t *>(&m_previous_challenge[0]),
-                  sizeof(uint32_t) * m_previous_challenge.size());
-    hasher.Final();
-    hasher.GetHash(hash);
-    return reinterpret_cast<int *>(hash)[0] == nChallengeValue;
-  }
-
-  virtual int GetChallengeNr(netadr_t &adr) {
-    UpdateChallengeIfNeeded();
-
-    m_challenge[4] = adr.GetIPNetworkByteOrder();
-
-    CSHA1 hasher;
-    hasher.Update(reinterpret_cast<uint8_t *>(&m_challenge[0]),
-                  sizeof(uint32_t) * m_challenge.size());
-    hasher.Final();
-    SHADigest_t hash = {0};
-    hasher.GetHash(hash);
-    return reinterpret_cast<int *>(hash)[0];
-  }
-
-  static void UpdateChallengeIfNeeded() {
-    const double current_time = Plat_FloatTime();
-    if (m_challenge_gen_time >= 0 &&
-        current_time < m_challenge_gen_time + CHALLENGE_NONCE_LIFETIME) {
-      return;
-    }
-
-    m_challenge_gen_time = current_time;
-    m_previous_challenge.swap(m_challenge);
-
-    m_challenge[0] = m_rng();
-    m_challenge[1] = m_rng();
-    m_challenge[2] = m_rng();
-    m_challenge[3] = m_rng();
-  }
-
-  static std::mt19937 InitializeRNG() noexcept {
-    try {
-      return std::mt19937(std::random_device{}());
-    } catch (const std::exception &e) {
-      Warning("[ServerSecure] Failed to initialize RNG seed, falling back to "
-              "less secure current time seed: %s\n",
-              e.what());
-      return std::mt19937(
-          static_cast<uint32_t>(Plat_FloatTime() * 1000000 /* microseconds */));
-    }
-  }
-
-  static std::mt19937 m_rng;
-  static double m_challenge_gen_time;
-  static std::array<uint32_t, 5> m_previous_challenge;
-  static std::array<uint32_t, 5> m_challenge;
-
-  static std::unique_ptr<CBaseServerProxy> Singleton;
-};
-
-std::mt19937 CBaseServerProxy::m_rng = CBaseServerProxy::InitializeRNG();
-double CBaseServerProxy::m_challenge_gen_time = -1;
-std::array<uint32_t, 5> CBaseServerProxy::m_previous_challenge;
-std::array<uint32_t, 5> CBaseServerProxy::m_challenge;
-
-std::unique_ptr<CBaseServerProxy> CBaseServerProxy::Singleton;
 
 static bool CheckChallengeNr(const netadr_t &adr, const int nChallengeValue) {
   if (!CBaseServerProxy::Singleton) {
