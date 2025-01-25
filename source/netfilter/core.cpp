@@ -1,12 +1,15 @@
 #include "core.hpp"
 #include "baseserver.hpp"
 #include "clientmanager.hpp"
+#include <iostream>
 #include "processingtime.hpp"
 
 #include <GarrysMod/FactoryLoader.hpp>
 #include <GarrysMod/FunctionPointers.hpp>
 #include <GarrysMod/InterfacePointers.hpp>
 #include <GarrysMod/Lua/Interface.h>
+#include <GarrysMod/Lua/LuaInterface.h>
+#include <GarrysMod/Lua/Helpers.hpp>
 #include <Platform.hpp>
 
 #include <detouring/classproxy.hpp>
@@ -91,6 +94,8 @@ struct netsocket_t {
   int32_t hUDP;
   int32_t hTCP;
 };
+
+GarrysMod::Lua::ILuaBase *server_lua = nullptr;
 
 namespace netfilter {
 
@@ -435,15 +440,10 @@ public:
 
   void BuildReplyInfo() {
     const char *server_name = server->GetName();
-
     const char *map_name = server->GetMapName();
-
     const char *game_dir = reply_info.game_dir.c_str();
-
     const char *game_desc = reply_info.game_desc.c_str();
-
     const int32_t appid = engine_server->GetAppID();
-
     const int32_t num_clients = server->GetNumClients();
 
     int32_t max_players =
@@ -453,7 +453,6 @@ public:
     }
 
     const int32_t num_fake_clients = server->GetNumFakeClients();
-
     const bool has_password = server->GetPassword() != nullptr;
 
     if (gameserver == nullptr) {
@@ -466,9 +465,7 @@ public:
     }
 
     const char *game_version = reply_info.game_version.c_str();
-
     const int32_t udp_port = reply_info.udp_port;
-
     const CSteamID *sid = engine_server->GetGameServerSteamID();
     const uint64_t steamid = sid != nullptr ? sid->ConvertToUint64() : 0;
 
@@ -510,6 +507,23 @@ public:
       info_cache_packet.WriteString(tags.c_str());
     }
     info_cache_packet.WriteLongLong(appid);
+  }
+
+  void BuildReplyPlayer(reply_player_t info) {
+    player_cache_packet.Reset();
+
+    player_cache_packet.WriteLong(-1);
+    player_cache_packet.WriteByte('D');
+
+    player_cache_packet.WriteByte(info.count);
+
+    for (int c = 0; c < info.count; c++) {
+      player_t player = info.players[c];
+      player_cache_packet.WriteByte(c);
+      player_cache_packet.WriteString(player.name.c_str());
+      player_cache_packet.WriteLong(player.score);
+      player_cache_packet.WriteFloat(player.time);
+    }
   }
 
   void SetFirewallWhitelistState(const bool enabled) {
@@ -587,6 +601,21 @@ private:
     int32_t max_clients = 0;
     int32_t udp_port = 0;
     server_tags_t tags;
+  };
+
+  struct player_t {
+    byte index;
+    std::string name;
+    double score;
+    double time;
+  };
+
+  struct reply_player_t {
+    bool dontsend;
+    bool senddefault;
+  
+    byte count;
+    std::vector<player_t> players;
   };
 
   enum class PacketType { Invalid = -1, Good, Info };
@@ -680,6 +709,12 @@ private:
   uint32_t info_cache_last_update = 0;
   uint32_t info_cache_time = 5;
 
+  reply_player_t reply_player;
+  std::array<char, 1024 * 5> player_cache_buffer{};
+  bf_write player_cache_packet =
+      bf_write(player_cache_buffer.data(),
+               static_cast<int32_t>(player_cache_buffer.size()));
+
   ClientManager client_manager;
 
   bool packet_sampling_enabled = false;
@@ -700,6 +735,68 @@ private:
     }
 
     return str;
+  }
+
+  reply_player_t CallPlayerHook(const sockaddr_in &from) {
+    char hook[] = "A2S_PLAYER";
+
+    reply_player_t players;
+    players.dontsend = false;
+    players.senddefault = true;
+
+    if (server_lua->Top() > 0)
+      return players;
+
+    int32_t funcs = LuaHelpers::PushHookRun(server_lua, hook);
+
+    if (funcs == 0)
+      return players;
+
+    server_lua->PushString(IPToString(from.sin_addr));
+    server_lua->PushNumber(from.sin_port);
+
+    LuaHelpers::CallHookRun(server_lua, 2, 1);
+
+    if (server_lua->IsType(-1, GarrysMod::Lua::Type::Bool)) {
+      if (!server_lua->GetBool(-1)) {
+        players.senddefault = false;
+        players.dontsend = true;
+      }
+    } else if (server_lua->IsType(-1, GarrysMod::Lua::Type::Table)) {
+      players.senddefault = false;
+      players.dontsend = false;
+
+      int count = server_lua->ObjLen(-1);
+      players.count = count;
+      std::vector<player_t> list(count);
+
+      for (int i = 0; i < count; i++) {
+        player_t player;
+        player.index = i;
+
+        server_lua->PushNumber(i + 1);
+        server_lua->GetTable(-2);
+
+        server_lua->GetField(-1, "name");
+        player.name = server_lua->GetString(-1);
+        server_lua->Pop(1);
+        server_lua->GetField(-1, "score");
+        player.score = server_lua->GetNumber(-1);
+        server_lua->Pop(1);
+        server_lua->GetField(-1, "time");
+        player.time = server_lua->GetNumber(-1);
+        server_lua->Pop(1);
+
+        list.at(i) = player;
+        server_lua->Pop(1);
+      }
+
+      players.players = list;
+    }
+
+    server_lua->Pop(1);
+
+    return players;
   }
 
   PacketType SendInfoCache(const sockaddr_in &from, uint32_t time) {
@@ -755,6 +852,25 @@ private:
     }
 
     return PacketType::Good;
+  }
+
+//HandlePlayerQuery
+  PacketType HandlePlayerQuery(const sockaddr_in &from) {
+    reply_player_t players = CallPlayerHook(from);
+
+    if (players.senddefault)
+      return PacketType::Good;
+
+    if (players.dontsend)
+      return PacketType::Invalid;
+
+    BuildReplyPlayer(players);
+
+    sendto(game_socket, reinterpret_cast<char *>(player_cache_packet.GetData()),
+           player_cache_packet.GetNumBytesWritten(), 0,
+           reinterpret_cast<const sockaddr *>(&from), sizeof(from));
+
+    return PacketType::Invalid;
   }
 
   PacketType ClassifyPacket(const uint8_t *data, int32_t len,
@@ -816,6 +932,7 @@ private:
         return PacketType::Info;
 
       case 'U': // player info request (A2S_PLAYER)
+	    return PacketType::Player;
       case 'V': // rules request (A2S_RULES)
         if (len != 9 && len != 1200) {
           DevWarning("[ServerSecure] Bad OOB! len: %d, channel: 0x%X, type: %c "
@@ -917,7 +1034,8 @@ private:
       return PacketType::Invalid;
     }
 
-    return type == 'T' ? PacketType::Info : PacketType::Good;
+    return type == 'T' ? PacketType::Info
+                       : (type == 'U' ? PacketType::Player : PacketType::Good);
   }
 
   bool IsAddressAllowed(const sockaddr_in &addr) {
@@ -1007,6 +1125,8 @@ private:
 
     const sockaddr_in &infrom = *reinterpret_cast<sockaddr_in *>(from);
     if (!IsAddressAllowed(infrom)) {
+      DevWarning("[ServerSecure] Blocked packet from %s\n",
+                 IPToString(infrom.sin_addr));
       return -1;
     }
 
@@ -1016,6 +1136,10 @@ private:
     PacketType type = ClassifyPacket(buffer, len, infrom);
     if (type == PacketType::Info) {
       type = HandleInfoQuery(buffer, len, infrom);
+    }
+
+    if (type == PacketType::Player) {
+      type = HandlePlayerQuery(infrom);
     }
 
     return type != PacketType::Invalid ? len : -1;
@@ -1270,6 +1394,7 @@ static bool CheckChallengeNr(const netadr_t &adr, const int nChallengeValue) {
 }
 
 void Initialize(GarrysMod::Lua::ILuaBase *LUA) {
+  server_lua = LUA;
   LUA->GetField(GarrysMod::Lua::INDEX_GLOBAL, "VERSION");
   const char *game_version = LUA->CheckString(-1);
 
