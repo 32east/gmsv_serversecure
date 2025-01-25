@@ -752,15 +752,20 @@ private:
     if (server_lua->Top() > 0)
       return players;
 
-    int32_t funcs = LuaHelpers::PushHookRun(server_lua, hook);
+	server_lua->PushSpecial(GarrysMod::Lua::SPECIAL_GLOB);
+		server_lua->GetField(-1, "hook");          
+			server_lua->GetField(-1, "Run");           
+				server_lua->PushString(hook);
+				server_lua->PushString(IPToString(from.sin_addr));
+				server_lua->PushNumber(from.sin_port);
 
-    if (funcs == 0)
-      return players;
-
-    server_lua->PushString(IPToString(from.sin_addr));
-    server_lua->PushNumber(from.sin_port);
-
-    LuaHelpers::CallHookRun(server_lua, 2, 1);
+				if (server_lua->PCall(2, 1, 0) != 0) {
+					Warning("%s\n", server_lua->GetString());
+					server_lua->Pop();
+				}
+			server_lua->Pop();
+		server_lua->Pop();
+	server_lua->Pop();
 
     if (server_lua->IsType(-1, GarrysMod::Lua::Type::Bool)) {
       if (!server_lua->GetBool(-1)) {
