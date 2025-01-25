@@ -44,10 +44,10 @@ CNetChanProxy::CNetChanProxy() {
     throw std::runtime_error("failed to hook CNetChan::ProcessMessages");
   }
 
-  if (!NET_ProcessSocket_hook.Create(NET_ProcessSocket_original,
-                                     NET_ProcessSocket_detour)) {
-    throw std::runtime_error("failed to create hook for NET_ProcessSocket");
-  }
+    if (!NET_ProcessSocket_hook.Create(reinterpret_cast<void*>(NET_ProcessSocket_original),
+                                       reinterpret_cast<void*>(NET_ProcessSocket_detour))) {
+        throw std::runtime_error("failed to create hook for NET_ProcessSocket");
+    }
 
   if (!NET_ProcessSocket_hook.Enable()) {
     throw std::runtime_error("failed to enable hook for NET_ProcessSocket");
