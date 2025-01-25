@@ -618,7 +618,7 @@ private:
     server_tags_t tags;
   };
 
-  enum class PacketType { Invalid = -1, Good, Info };
+  enum class PacketType { Invalid = -1, Good, Info, Masterserver, Player };
 
   using recvfrom_t = ssize_t(SERVERSECURE_CALLING_CONVENTION *)(
       SOCKET, void *, recvlen_t, int32_t, sockaddr *, socklen_t *);
