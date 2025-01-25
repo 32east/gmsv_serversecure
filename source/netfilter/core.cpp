@@ -245,6 +245,8 @@ private:
     std::string ver;
   };
 
+  reply_player_t ch_players;
+
 public:
   struct packet_t {
     packet_t() : address(), address_size(sizeof(address)) {}
@@ -709,6 +711,9 @@ private:
   uint32_t info_cache_last_update = 0;
   uint32_t info_cache_time = 5;
 
+  uint32_t info_cache_players_last_update = 0;
+  uint32_t info_cache_players_time = 5;
+
   reply_player_t reply_player;
   std::array<char, 1024 * 5> player_cache_buffer{};
   bf_write player_cache_packet =
@@ -854,17 +859,37 @@ private:
     return PacketType::Good;
   }
 
-//HandlePlayerQuery
-  PacketType HandlePlayerQuery(const sockaddr_in &from) {
-    reply_player_t players = CallPlayerHook(from);
+// HandlePlayerQuery
+  PacketType HandlePlayerQuery(const uint8_t* buffer,
+                             ssize_t length,
+                             const sockaddr_in &from) {
+    const auto time = static_cast<uint32_t>(Plat_FloatTime());
+    if (!client_manager.CheckIPRate(from.sin_addr.s_addr, time)) {
+      DevWarning(2, "[ServerSecure] Client %s hit rate limit\n",
+                 IPToString(from.sin_addr));
+      return PacketType::Invalid;
+    }
 
-    if (players.senddefault)
+    // 5 seconds
+    if (time - info_cache_players_last_update >= info_cache_players_time) {
+		info_cache_players_last_update = time;
+
+		ch_players = CallPlayerHook(from);
+
+		if (ch_players.senddefault)
+		  return PacketType::Good;
+
+		if (ch_players.dontsend)
+		  return PacketType::Invalid;
+
+		BuildReplyPlayer(ch_players);
+    }
+
+    if (ch_players.senddefault)
       return PacketType::Good;
 
-    if (players.dontsend)
+    if (ch_players.dontsend)
       return PacketType::Invalid;
-
-    BuildReplyPlayer(players);
 
     sendto(game_socket, reinterpret_cast<char *>(player_cache_packet.GetData()),
            player_cache_packet.GetNumBytesWritten(), 0,
@@ -872,6 +897,7 @@ private:
 
     return PacketType::Invalid;
   }
+// HandlePlayerQuery
 
   PacketType ClassifyPacket(const uint8_t *data, int32_t len,
                             const sockaddr_in &from) {
@@ -1144,7 +1170,7 @@ private:
     }
 
     if (type == PacketType::Player) {
-      type = HandlePlayerQuery(infrom);
+      type = HandlePlayerQuery(buffer, len, infrom);
     }
 
     return type != PacketType::Invalid ? len : -1;
